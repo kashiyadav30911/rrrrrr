@@ -1,0 +1,69 @@
+name: CI / Production Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run production build
+        run: npm run build
+
+      - name: Start production server
+        run: npm run start &
+
+      - name: Wait for server
+        run: |
+          for i in {1..40}; do
+            if curl -fsS http://127.0.0.1:3000/api/generate > /tmp/api-health.json; then
+              echo "Server is ready"
+              cat /tmp/api-health.json
+              exit 0
+            fi
+            echo "Waiting for server... ($i/40)"
+            sleep 2
+          done
+          echo "Server failed to start in time"
+          exit 1
+
+      - name: Validate API health response
+        run: |
+          node -e "const fs=require('fs');const t=fs.readFileSync('/tmp/api-health.json','utf8');const j=JSON.parse(t);if(j.status!=='API Ready'){console.error('Unexpected API status payload:',j);process.exit(1)}console.log('API health check passed:',j.provider,j.model);"
+
+      - name: Upload Next.js build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-build-artifacts
+          path: |
+            .next
+            package.json
+            package-lock.json
